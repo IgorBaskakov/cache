@@ -10,3 +10,4 @@ URLs:
 - https://www.facebook.com
 MinTimeout: 10
 MaxTimeout: 100
+NumberOfRequests: 3
