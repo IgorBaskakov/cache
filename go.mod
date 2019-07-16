@@ -1,5 +1,10 @@
-module github.com/IgorBaskakov/cache
+module github.com/IgorBaskakov/service
 
 go 1.12
 
-require github.com/spf13/viper v1.4.0
+require (
+	github.com/golang/dep v0.5.4
+	github.com/golang/protobuf v1.3.2
+	github.com/spf13/viper v1.4.0
+	google.golang.org/grpc v1.22.0
+)

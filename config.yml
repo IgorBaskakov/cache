@@ -5,9 +5,9 @@ URLs:
 - https://www.github.com
 - https://www.gitlab.com
 - https://www.duckduckgo.com
-- https://www.atlasian.com
+- https://www.atlassian.com
 - https://www.twitter.com
 - https://www.facebook.com
 MinTimeout: 10
 MaxTimeout: 100
-NumberOfRequests: 3
+NumberOfRequests: 10

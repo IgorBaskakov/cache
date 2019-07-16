@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package cache;
+
+service Cacher {
+  rpc GetRandomDataStream (Nothing) returns (stream CacheData) {}
+}
+
+message CacheData {
+  string str = 1;
+}
+
+message Nothing {
+  bool dummy = 1;
+}
