@@ -58,46 +58,17 @@ var counterStart, counterEnd uint64
 
 // GetRandomDataStream implements cache.CacherServer.
 func (cs *cacherServer) GetRandomDataStream(in *pb.Nothing, stream pb.Cacher_GetRandomDataStreamServer) error {
-	// atomic.AddUint64(&counterStart, 1)
-	// defer func() {
-	// 	atomic.AddUint64(&counterEnd, 1)
-	// }()
+	atomic.AddUint64(&counterStart, 1)
+	defer func() {
+		atomic.AddUint64(&counterEnd, 1)
+	}()
 	wg := &sync.WaitGroup{}
 	result := make(chan response)
 
 	for i := 0; i < cs.numberOfRequests; i++ {
 		url := getRandomURL(cs.urls)
 		wg.Add(1)
-		go func() {
-			defer wg.Done()
-
-			urlChans.Lock()
-			ch, ok := urlChans.urls[url]
-			urlChans.Unlock()
-			if !ok {
-				return
-			}
-			ch <- struct{}{}
-
-			defer func() {
-				<-ch
-			}()
-
-			var resp *response
-			cont, err := cs.storage.Get(url)
-			if err != nil {
-				if resp, err = getContent(url); err != nil {
-					return
-				}
-
-				timeout := getRandomTimeout(cs.minTimeout, cs.maxTimeout)
-				dur := time.Duration(int64(timeout)) * time.Second
-				cs.storage.Set(resp.url, resp.content, dur)
-				cont = resp.content
-			}
-
-			result <- response{url: url, content: cont}
-		}()
+		go cs.getData(wg, url, result)
 	}
 
 	go func() {
@@ -113,6 +84,37 @@ func (cs *cacherServer) GetRandomDataStream(in *pb.Nothing, stream pb.Cacher_Get
 	}
 
 	return nil
+}
+
+func (cs *cacherServer) getData(wg *sync.WaitGroup, url string, out chan response) {
+	defer wg.Done()
+
+	urlChans.Lock()
+	ch, ok := urlChans.urls[url]
+	urlChans.Unlock()
+	if !ok {
+		return
+	}
+	ch <- struct{}{}
+
+	defer func() {
+		<-ch
+	}()
+
+	var resp *response
+	cont, err := cs.storage.Get(url)
+	if err != nil {
+		if resp, err = getContent(url); err != nil {
+			return
+		}
+
+		timeout := getRandomTimeout(cs.minTimeout, cs.maxTimeout)
+		dur := time.Duration(int64(timeout)) * time.Millisecond
+		cs.storage.Set(resp.url, resp.content, dur)
+		cont = resp.content
+	}
+
+	out <- response{url: url, content: cont}
 }
 
 func getRandomURL(urls []string) string {
@@ -201,7 +203,7 @@ func main() {
 	pb.RegisterCacherServer(s, &cacherServer{config: conf, storage: st})
 	fmt.Printf("Start gRPC server at port %s\n", port)
 
-	// go printCounter()
+	go printCounter()
 	if err := s.Serve(lis); err != nil {
 		log.Fatalf("failed to serve: %v", err)
 	}

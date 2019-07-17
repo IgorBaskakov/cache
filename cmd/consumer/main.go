@@ -65,5 +65,5 @@ func main() {
 	}
 	wg.Wait()
 	opsFinal := atomic.LoadUint64(&ops)
-	fmt.Println("ops:", opsFinal)
+	fmt.Println("count read from stream:", opsFinal)
 }
