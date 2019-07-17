@@ -3,52 +3,67 @@ package main
 import (
 	"context"
 	"fmt"
-	"io"
 	"log"
-	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
 
 	pb "github.com/IgorBaskakov/service/cache"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/keepalive"
 )
 
 const (
-	address = "localhost:50051"
+	address       = "localhost:50051"
+	maxConnection = 500
+	maxLen        = 100
 )
 
-func main() {
+func sendGRPCRequest(wg *sync.WaitGroup, ops *uint64) {
+	defer wg.Done()
+
+	opt1 := grpc.WithInsecure()
+	kep := keepalive.ClientParameters{
+		Time: 2 * time.Minute,
+	}
+	opt2 := grpc.WithKeepaliveParams(kep)
+	options := []grpc.DialOption{opt1, opt2}
 	// Set up a connection to the server.
-	conn, err := grpc.Dial(address, grpc.WithInsecure())
+	conn, err := grpc.Dial(address, options...)
 	if err != nil {
 		log.Fatalf("did not connect: %v", err)
 	}
-	defer conn.Close()
-	client := pb.NewCacherClient(conn)
 
+	defer conn.Close()
+
+	client := pb.NewCacherClient(conn)
 	stream, err := client.GetRandomDataStream(context.Background(), &pb.Nothing{})
 	if err != nil {
-		log.Fatalf("error get random data stream: %v", err)
+		// log.Printf("error get random data stream: %v", err)
+		return
 	}
 
-	i := 0
 	for {
-		i++
-		cdata, err := stream.Recv()
-		if err == io.EOF {
-			break
+		_, err := stream.Recv()
+		if err != nil { //io.EOF
+			return
 		}
-		if err != nil {
-			log.Fatalf("%v.GetRandomDataStream(_) = _, %v", client, err)
-		}
-		fmt.Printf("get result from %d url with content:\n %s\n\n", i, cutContent(cdata.Str))
-		// fmt.Println(cdata.Str)
+		atomic.AddUint64(ops, 1)
 	}
 }
 
-const maxLen = 360
-
-func cutContent(indata string) string {
-	data := strings.TrimSpace(indata)
-	r := []rune(data)
-	return string(r[:maxLen]) + "..."
+func main() {
+	var ops uint64
+	defer func(now time.Time) {
+		fmt.Printf("spent %s\n", time.Since(now))
+	}(time.Now())
+	wg := &sync.WaitGroup{}
+	for i := 0; i < maxConnection; i++ {
+		wg.Add(1)
+		go sendGRPCRequest(wg, &ops)
+	}
+	wg.Wait()
+	opsFinal := atomic.LoadUint64(&ops)
+	fmt.Println("ops:", opsFinal)
 }

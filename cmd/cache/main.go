@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	pb "github.com/IgorBaskakov/service/cache"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/spf13/viper"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/keepalive"
 )
 
 type storage interface {
@@ -44,11 +46,22 @@ type cacherServer struct {
 
 type response struct {
 	url, content string
-	cached       bool
 }
+
+type chans struct {
+	sync.Mutex
+	urls map[string]chan struct{}
+}
+
+var urlChans = chans{urls: make(map[string]chan struct{})}
+var counterStart, counterEnd uint64
 
 // GetRandomDataStream implements cache.CacherServer.
 func (cs *cacherServer) GetRandomDataStream(in *pb.Nothing, stream pb.Cacher_GetRandomDataStreamServer) error {
+	// atomic.AddUint64(&counterStart, 1)
+	// defer func() {
+	// 	atomic.AddUint64(&counterEnd, 1)
+	// }()
 	wg := &sync.WaitGroup{}
 	result := make(chan response)
 
@@ -57,14 +70,33 @@ func (cs *cacherServer) GetRandomDataStream(in *pb.Nothing, stream pb.Cacher_Get
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			cont, err := cs.storage.Get(url)
-			if err != nil {
-				log.Printf("get by url %q from redis error: %+v", url, err)
-				getContent(url, result)
+
+			urlChans.Lock()
+			ch, ok := urlChans.urls[url]
+			urlChans.Unlock()
+			if !ok {
 				return
 			}
+			ch <- struct{}{}
 
-			result <- response{url: url, content: cont, cached: true}
+			defer func() {
+				<-ch
+			}()
+
+			var resp *response
+			cont, err := cs.storage.Get(url)
+			if err != nil {
+				if resp, err = getContent(url); err != nil {
+					return
+				}
+
+				timeout := getRandomTimeout(cs.minTimeout, cs.maxTimeout)
+				dur := time.Duration(int64(timeout)) * time.Second
+				cs.storage.Set(resp.url, resp.content, dur)
+				cont = resp.content
+			}
+
+			result <- response{url: url, content: cont}
 		}()
 	}
 
@@ -77,12 +109,6 @@ func (cs *cacherServer) GetRandomDataStream(in *pb.Nothing, stream pb.Cacher_Get
 		cd := &pb.CacheData{Str: resp.content}
 		if err := stream.Send(cd); err != nil {
 			return err
-		}
-		if !resp.cached {
-			timeout := getRandomTimeout(cs.minTimeout, cs.maxTimeout)
-			dur := time.Duration(int64(timeout)) * time.Second
-			fmt.Printf("set url %q to redis\n", resp.url)
-			cs.storage.Set(resp.url, resp.content, dur)
 		}
 	}
 
@@ -105,10 +131,10 @@ func getRandomTimeout(min, max uint) uint {
 	return uint(timeout) + min
 }
 
-func getContent(url string, out chan response) {
+func getContent(url string) (*response, error) {
 	tr := &http.Transport{
-		MaxIdleConns:       10,
-		IdleConnTimeout:    3 * time.Second,
+		MaxIdleConns:       30,
+		IdleConnTimeout:    1 * time.Second,
 		DisableCompression: true,
 	}
 	client := &http.Client{Transport: tr}
@@ -116,17 +142,17 @@ func getContent(url string, out chan response) {
 	resp, err := client.Get(url)
 	if err != nil {
 		log.Printf("http get error: %+v", err)
-		return
+		return nil, err
 	}
 	defer resp.Body.Close()
 
 	data, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		log.Printf("error read data from response: %+v", err)
-		return
+		return nil, err
 	}
 
-	out <- response{url: url, content: string(data), cached: false}
+	return &response{url: url, content: string(data)}, nil
 }
 
 func getStorage() storage {
@@ -151,21 +177,42 @@ func main() {
 		maxTimeout:       viper.GetUint("MaxTimeout"),
 		numberOfRequests: viper.GetInt("NumberOfRequests"),
 	}
-	fmt.Printf("config = %+v\n", conf)
+	for _, url := range conf.urls {
+		urlChans.urls[url] = make(chan struct{}, 1)
+	}
 
 	st := getStorage()
-	fmt.Printf("storage = %+v\n", st)
 
-	// flag.Parse()
 	lis, err := net.Listen("tcp", port)
 	if err != nil {
 		log.Fatalf("failed to listen: %v", err)
 	}
 
-	s := grpc.NewServer()
+	opt1 := grpc.MaxConcurrentStreams(2000)
+	opt2 := grpc.ConnectionTimeout(1 * time.Minute)
+	kep := keepalive.EnforcementPolicy{
+		MinTime:             1 * time.Minute,
+		PermitWithoutStream: true,
+	}
+	opt3 := grpc.KeepaliveEnforcementPolicy(kep)
+	options := []grpc.ServerOption{opt1, opt2, opt3}
+	s := grpc.NewServer(options...)
+
 	pb.RegisterCacherServer(s, &cacherServer{config: conf, storage: st})
 	fmt.Printf("Start gRPC server at port %s\n", port)
+
+	// go printCounter()
 	if err := s.Serve(lis); err != nil {
 		log.Fatalf("failed to serve: %v", err)
+	}
+}
+
+func printCounter() {
+	for {
+		time.Sleep(1 * time.Second)
+		opsStart := atomic.LoadUint64(&counterStart)
+		fmt.Println("counter start:", opsStart)
+		opsEnd := atomic.LoadUint64(&counterEnd)
+		fmt.Println("counter end:", opsEnd)
 	}
 }
