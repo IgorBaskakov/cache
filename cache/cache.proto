@@ -11,5 +11,4 @@ message CacheData {
 }
 
 message Nothing {
-  bool dummy = 1;
 }
